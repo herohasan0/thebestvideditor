@@ -27,13 +27,6 @@
   <span class="grow"></span>
   <button id="side" class="tog" title="Layout: player down the right side, for vertical video" aria-label="Side player layout"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16M3 13h11"/></svg></button>
   <label class="sr" for="res">Export resolution</label>
-  <select id="res" title="Export resolution">
-    <option value="0">Source size</option>
-    <option value="720">720p</option>
-    <option value="1080">1080p</option>
-    <option value="1440">1440p</option>
-    <option value="2160">4K</option>
-  </select>
   <button id="export" class="primary">Export</button>
 </header>
 
@@ -147,7 +140,7 @@
   <button id="undo" title="Undo (⌘Z)" aria-label="Undo"><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button>
   <button id="redo" title="Redo (⇧⌘Z)" aria-label="Redo"><svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg></button>
   <i class="sep"></i>
-  <button id="split" title="Split at playhead (S)">Split</button>
+  <button id="split" class="tog" title="Razor: while it is on, click any clip to cut it at that point. Click again to turn it off. (S cuts at the playhead)" aria-label="Razor"><svg viewBox="0 0 24 24"><path d="M5 6h3l1 1.5h6L16 6h3a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3l-1-1.5H9L8 18H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"/><path d="M9 12h6"/></svg></button>
   <button id="del" title="Delete selected clip (⌫)">Delete</button>
   <button id="addtext" title="Add text at the playhead">+ Text</button>
   <span class="grow"></span>
@@ -172,6 +165,7 @@
 
 <div id="menu" role="menu" hidden>
   <button id="m-detach" role="menuitem">Detach audio <kbd>D</kbd></button>
+  <button id="m-export" role="menuitem">Export clip…</button>
   <button id="m-delete" role="menuitem">Delete <kbd>⌫</kbd></button>
 </div>
 
@@ -182,6 +176,22 @@
     <button id="cancel">Cancel</button>
   </div>
 </div>
+<dialog id="exp" aria-labelledby="exp-t">
+  <form method="dialog">
+    <b id="exp-t">Export video</b>
+    <div class="row"><label for="res">Size</label>
+    <select id="res" title="Export resolution">
+      <option value="0">Source size</option>
+      <option value="720">720p</option>
+      <option value="1080">1080p</option>
+      <option value="1440">1440p</option>
+      <option value="2160">4K</option>
+    </select>
+    <output id="res-s"></output></div>
+    <small>MP4 file, saved to your computer.</small>
+    <div class="row btns"><button value="">Cancel</button><button id="go" class="primary" value="go">Export</button></div>
+  </form>
+</dialog>
 <div id="ask" hidden>
   <div role="dialog" aria-modal="true" aria-labelledby="ask-t">
     <b id="ask-t"></b>

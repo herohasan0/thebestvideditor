@@ -19,7 +19,7 @@ let cropping = false; // crop mode: the selection box's corners cut the picture 
 let project = null, loaded = false, pickIndex = null; // pickIndex: where picked files go on the timeline, null = library only
 
 // Timeline switches, remembered per browser. magnet: the main track closes up by itself; snap: dragged things stick to edges, markers and the playhead; link: audio and text follow the main clip they start over.
-const opt = { magnet: true, snap: true, link: true, lib: true, th: 0, side: false, guide: '' }; // lib: media panel open; th: timeline height in px, 0 = the default; side: the layout with the player down the right
+const opt = { magnet: true, snap: true, link: true, lib: true, th: 0, side: false, guide: '', split: false }; // lib: media panel open; th: timeline height in px, 0 = the default; side: the layout with the player down the right; split: razor mode
 try { Object.assign(opt, JSON.parse(localStorage.getItem('tbve-opt'))); } catch {} // storage can be blocked; the defaults still work
 
 const keep = () => { try { localStorage.setItem('tbve-opt', JSON.stringify(opt)); } catch {} };
@@ -689,6 +689,12 @@ $('lane').onpointerdown = (e) => {
   const close = e.target.closest('.gap button');
   if (close) { selected = 'gap:' + close.parentElement.dataset.id; return remove(); }
   pause();
+  const blade = opt.split && e.target.closest('.clip');
+  if (blade) { // razor: cut the clicked clip right there (or at the edge, marker or playhead the click sticks to)
+    selected = blade.dataset.id; // split() cuts a selected audio or text clip first, else the main clip under the playhead
+    seek(stick((e.clientX - $('lane').getBoundingClientRect().left) / pps, stops()));
+    return split();
+  }
   let x0 = e.clientX;
   const y0 = e.clientY, el = e.target.closest('.clip'), handle = e.target.closest('.h'), gap = e.target.closest('.gap');
   const c = el && [...clips, ...audio, ...texts].find((k) => k.id === el.dataset.id);
@@ -782,17 +788,32 @@ $('lane').onpointerdown = (e) => {
 // ---------- export ----------
 const even = (n) => Math.max(2, Math.round(n / 2) * 2);
 
-async function exportVideo() {
+function outSize() { // the exported picture's size: "1080p" means the short side
+  const [sw, sh] = frameSize(), pick = +$('res').value, scale = pick ? pick / Math.min(sw, sh) : 1;
+  return [even(sw * scale), even(sh * scale)];
+}
+
+// A free clip cut down to the stretch [from, from + T) and moved so that stretch starts at 0; null when it lies outside.
+// shortcut: a fade on an end that gets cut off is dropped, not continued mid-way; carry the fade's phase over if that shows
+function cut(c, from, T) {
+  const s = Math.max(c.at, from), e = Math.min(c.at + dur(c), from + T);
+  return e - s < 1e-3 ? null : { ...c, in: c.in + s - c.at, out: c.in + e - c.at, at: s - from, ...(s > c.at && { fin: 0 }), ...(e < c.at + dur(c) && { fout: 0 }) };
+}
+
+// part: a main-track clip to export on its own, together with whatever sits over its stretch of the timeline (overlays, text, sound)
+async function exportVideo(part) {
   if (!total() || busy) return;
   pause();
-  const list = clips.map((c) => ({ ...c })), T = total();
-  const [sw, sh] = frameSize(), words = texts.map((c) => ({ ...c }));
-  const pick = +$('res').value, scale = pick ? pick / Math.min(sw, sh) : 1; // "1080p" = short side
-  const w = even(sw * scale), h = even(sh * scale);
+  const from = part ? startOf(part) : 0, T = part ? dur(part) : total();
+  const free = (l) => (part ? l.map((c) => cut(c, from, T)).filter(Boolean) : l.map((c) => ({ ...c })));
+  const list = part ? [{ ...part, gap: 0 }] : clips.map((c) => ({ ...c }));
+  const [sw, sh] = frameSize(), words = free(texts);
+  const name = project.name + (part ? ` - clip ${clips.indexOf(part) + 1}` : '') + '.mp4';
+  const [w, h] = outSize(), scale = w / sw;
 
   // every piece of sound on the timeline: the audio track plus the video clips' own audio
-  const segs = audio.filter((c) => assets.get(c.asset).kind !== 'image').map((c) => ({ ...c }));
-  const overs = audio.filter(visual).map((c) => ({ ...c, it: null, cur: null })); // it, cur: an overlay video's frame stream and the frame it is on
+  const segs = free(audio.filter((c) => assets.get(c.asset).kind !== 'image'));
+  const overs = free(audio.filter(visual)).map((c) => ({ ...c, it: null, cur: null })); // it, cur: an overlay video's frame stream and the frame it is on
   let pos = 0;
   for (const c of list) {
     pos += c.gap ?? 0;
@@ -808,7 +829,7 @@ async function exportVideo() {
   let target;
   if (window.showSaveFilePicker) { // stream straight to disk, so long 4K exports don't fill RAM
     let handle;
-    try { handle = await showSaveFilePicker({ suggestedName: project.name + '.mp4', types: [{ accept: { 'video/mp4': ['.mp4'] } }] }); }
+    try { handle = await showSaveFilePicker({ suggestedName: name, types: [{ accept: { 'video/mp4': ['.mp4'] } }] }); }
     catch { return; }
     target = new StreamTarget(await handle.createWritable(), { chunked: true });
   } else {
@@ -972,7 +993,7 @@ async function exportVideo() {
     if (target instanceof BufferTarget) {
       const a = document.createElement('a');
       a.href = URL.createObjectURL(new Blob([target.buffer], { type: 'video/mp4' }));
-      a.download = project.name + '.mp4';
+      a.download = name;
       a.click();
     }
     toast(`Exported ${w}×${h}`);
@@ -1036,7 +1057,6 @@ $('frame').onpointerdown = (e) => {
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
 };
-$('split').onclick = split;
 $('del').onclick = remove;
 $('addtext').onclick = addText;
 
@@ -1050,6 +1070,7 @@ $('lane').oncontextmenu = (e) => {
   render();
   const menu = $('menu');
   $('m-detach').hidden = !canDetach(picked());
+  $('m-export').hidden = !clips.includes(picked());
   menu.hidden = false;
   menu.style.left = Math.min(e.clientX, innerWidth - menu.offsetWidth - 8) + 'px';
   menu.style.top = Math.min(e.clientY, innerHeight - menu.offsetHeight - 8) + 'px';
@@ -1128,7 +1149,7 @@ const guide = () => { // the platform overlay is preview-only: export draws on i
 $('plat').onchange = (e) => { opt.guide = e.target.value; keep(); guide(); };
 guide();
 $('ratio').onchange = (e) => { project.ratio = e.target.value || null; render(); };
-for (const k of ['magnet', 'snap', 'link']) {
+for (const k of ['magnet', 'snap', 'link', 'split']) { // split: the razor, where a click on a clip cuts it
   $(k).ariaPressed = opt[k];
   $(k).onclick = () => { $(k).ariaPressed = opt[k] = !opt[k]; keep(); };
 }
@@ -1200,7 +1221,19 @@ tweak('tcolor', (c, v) => { c.color = v; });
 
 $('undo').onclick = () => restore(undo, redo);
 $('redo').onclick = () => restore(redo, undo);
-$('export').onclick = exportVideo;
+const sizeNote = () => { $('res-s').textContent = outSize().join(' × '); };
+let part = null; // the clip "Export clip" was chosen for; null exports the whole project
+const askExport = (c) => {
+  if (!total() || busy) return;
+  pause(); sizeNote();
+  part = c;
+  $('exp-t').textContent = c ? `Export clip ${clips.indexOf(c) + 1}` : 'Export video';
+  $('exp').showModal(); $('go').focus();
+};
+$('export').onclick = () => askExport(null);
+$('m-export').onclick = () => { $('menu').hidden = true; askExport(picked()); };
+$('res').onchange = sizeNote;
+$('go').onclick = () => exportVideo(part); // the form closes the dialog itself; the click also carries the permission the save picker needs
 $('zoom').oninput = (e) => { pps = 2 ** e.target.value; render(); };
 
 addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('dragging'); });
@@ -1231,7 +1264,7 @@ addEventListener('keydown', (e) => {
   if (busy || !project || (e.target.matches?.('select, input') && !(e.key === ' ' && e.target.type === 'range'))) return; // Space still plays from a slider
   const mod = e.metaKey || e.ctrlKey, key = e.key.toLowerCase();
   if (key === 'escape') $('menu').hidden = true;
-  if (e.target.closest?.('#menu, .gap')) return; // let Enter and Space press the focused menu item or gap button
+  if (e.target.closest?.('#menu, .gap, dialog')) return; // let Enter and Space press the focused menu item or gap button
   if (key === ' ') $('play').click();
   else if (mod && key === 'z') e.shiftKey ? restore(redo, undo) : restore(undo, redo);
   else if (mod) return;
@@ -1267,5 +1300,8 @@ if (location.hash === '#selftest') {
   audio = [];
   clips = [];
   console.assert(locate(0) === null, 'empty');
+  const k = cut({ in: 2, out: 10, at: 4, fin: 1, fout: 1 }, 6, 3); // covers 4..12 on the timeline, exported stretch is 6..9
+  console.assert(k.in === 4 && k.out === 7 && k.at === 0 && k.fin === 0 && k.fout === 0, 'cut trims both ends');
+  console.assert(cut({ in: 0, out: 1, at: 0 }, 6, 3) === null && cut({ in: 0, out: 2, at: 7, fin: 1 }, 6, 3).at === 1 && cut({ in: 0, out: 2, at: 7, fin: 1 }, 6, 3).fin === 1, 'cut drops outsiders, keeps insiders whole');
   console.log('selftest done');
 }

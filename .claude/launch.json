@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "editor",
+      "runtimeExecutable": "/usr/bin/python3",
+      "runtimeArgs": [
+        "-c",
+        "import os, functools, http.server as h; os.chdir('/'); H = type('H', (h.SimpleHTTPRequestHandler,), {'end_headers': lambda s: (s.send_header('Cache-Control', 'no-store'), h.SimpleHTTPRequestHandler.end_headers(s))[1]}); h.ThreadingHTTPServer(('', int(os.environ.get('PORT', '5173'))), functools.partial(H, directory='/Users/hasankahraman/Desktop/playground/thebestvideditor.com')).serve_forever()"
+      ],
+      "port": 5173
+    }
+  ]
+}

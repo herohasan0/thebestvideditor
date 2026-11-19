@@ -1290,7 +1290,9 @@ let part = null; // the clip "Export clip" was chosen for; null exports the whol
 const askExport = (c) => {
   if (!total() || busy) return;
   pause();
-  part = c; sizeNote();
+  part = c;
+  if (copyable(c)) $('qual').value = 0; // lossless whenever it is possible; sizeNote() falls back to High when it is not
+  sizeNote();
   $('exp-t').textContent = c ? `Export clip ${clips.indexOf(c) + 1}` : 'Export video';
   $('exp').showModal(); $('go').focus();
 };

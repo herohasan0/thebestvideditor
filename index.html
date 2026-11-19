@@ -188,6 +188,14 @@
       <option value="2160">4K</option>
     </select>
     <output id="res-s"></output></div>
+    <div class="row"><label for="qual">Quality</label>
+    <select id="qual" title="Maximum keeps more fine detail and makes a file about three times bigger">
+      <option value="6">High</option>
+      <option value="18">Maximum</option>
+      <option value="0" title="Only for a single video clip that has cuts and nothing else: no text, overlay, crop, zoom, fade or volume change">Original (no re-encoding)</option>
+    </select>
+    <output id="qual-s"></output></div>
+    <small id="exp-n" hidden>Copies the source untouched, so nothing is lost. A copy can only start on a key frame, so this one may begin up to a second or so before your cut.</small>
     <small>MP4 file, saved to your computer.</small>
     <div class="row btns"><button value="">Cancel</button><button id="go" class="primary" value="go">Export</button></div>
   </form>

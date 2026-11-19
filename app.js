@@ -1,6 +1,6 @@
 import {
   Input, ALL_FORMATS, BlobSource, Output, Mp4OutputFormat, BufferTarget, StreamTarget,
-  CanvasSink, CanvasSource, AudioBufferSink, AudioBufferSource, QUALITY_HIGH, QUALITY_MEDIUM, Conversion,
+  CanvasSink, CanvasSource, AudioBufferSink, AudioBufferSource, EncodedPacketSink, EncodedVideoPacketSource, EncodedAudioPacketSource, QUALITY_HIGH, QUALITY_MEDIUM, Conversion,
   getFirstEncodableVideoCodec, getFirstEncodableAudioCodec,
 } from './vendor/mediabunny.min.mjs';
 
@@ -801,6 +801,20 @@ function cut(c, from, T) {
 }
 
 // part: a main-track clip to export on its own, together with whatever sits over its stretch of the timeline (overlays, text, sound)
+// Video bits per second for the chosen quality: 6 or 18 Mbit at 1080p, growing a little slower than the pixel count
+// (the encoder library's own curve; its "high" preset equals the 6).
+const bitrate = () => { const [w, h] = outSize(); return Math.round(+$('qual').value * 1e6 * (w * h / (1920 * 1080)) ** 0.95); };
+
+// The clip whose source data can be copied into the export untouched (no re-encoding, so no quality loss), or null.
+// That holds only for one video clip with nothing done to it but cuts, nothing over it, and a frame of its own shape.
+function copyable(part) {
+  const c = part ?? (clips.length === 1 && !clips[0].gap ? clips[0] : null);
+  if (!c || assets.get(c.asset).kind !== 'video') return null;
+  const plain = !['px', 'py', 'rot', 'crop', 'fin', 'fout', 'mute', 'detached'].some((k) => c[k]) && (c.zoom ?? 1) === 1 && (c.vol ?? 1) === 1;
+  const clear = part ? ![...audio, ...texts].some((k) => cut(k, startOf(c), dur(c))) : !audio.length && !texts.length;
+  return plain && clear && frameSize().join() === size(assets.get(c.asset).el).join() ? c : null;
+}
+
 async function exportVideo(part) {
   if (!total() || busy) return;
   pause();
@@ -821,10 +835,22 @@ async function exportVideo(part) {
     pos += dur(c);
   }
 
+  const inputs = new Map(), sinks = new Map();
+  const open = (id) => inputs.get(id) ?? inputs.set(id, new Input({ source: new BlobSource(assets.get(id).file), formats: ALL_FORMATS })).get(id);
   const format = new Mp4OutputFormat();
-  const vcodec = await getFirstEncodableVideoCodec(format.getSupportedVideoCodecs(), { width: w, height: h });
-  const acodec = await getFirstEncodableAudioCodec(format.getSupportedAudioCodecs());
-  if (!vcodec) return toast(`This browser can't encode ${w}×${h}. Try a smaller size or Chrome.`);
+  const copy = $('qual').value === '0' ? copyable(part) : null; // "Original": the source's own packets go into the file as they are
+  let vcodec, acodec, vt, at;
+  if (copy) {
+    vt = await open(copy.asset).getPrimaryVideoTrack(); at = await open(copy.asset).getPrimaryAudioTrack();
+    if (!format.getSupportedVideoCodecs().includes(vt.codec) || (at && !format.getSupportedAudioCodecs().includes(at.codec))) {
+      inputs.get(copy.asset).dispose();
+      return toast("This file's format can't be copied into an MP4. Choose High or Maximum instead.");
+    }
+  } else {
+    vcodec = await getFirstEncodableVideoCodec(format.getSupportedVideoCodecs(), { width: w, height: h });
+    acodec = await getFirstEncodableAudioCodec(format.getSupportedAudioCodecs());
+    if (!vcodec) return toast(`This browser can't encode ${w}×${h}. Try a smaller size or Chrome.`);
+  }
 
   let target;
   if (window.showSaveFilePicker) { // stream straight to disk, so long 4K exports don't fill RAM
@@ -839,13 +865,11 @@ async function exportVideo(part) {
 
   const output = new Output({ format, target });
   const canvas = new OffscreenCanvas(w, h), ctx = canvas.getContext('2d');
-  const vsrc = new CanvasSource(canvas, { codec: vcodec, bitrate: QUALITY_HIGH });
-  output.addVideoTrack(vsrc);
-  const asrc = acodec && new AudioBufferSource({ codec: acodec, bitrate: QUALITY_HIGH });
+  const vsrc = copy ? new EncodedVideoPacketSource(vt.codec) : new CanvasSource(canvas, { codec: vcodec, bitrate: bitrate() });
+  output.addVideoTrack(vsrc, copy ? { rotation: vt.rotation } : undefined);
+  const asrc = copy ? at && new EncodedAudioPacketSource(at.codec) : acodec && new AudioBufferSource({ codec: acodec, bitrate: QUALITY_HIGH });
   if (asrc) output.addAudioTrack(asrc);
 
-  const inputs = new Map(), sinks = new Map();
-  const open = (id) => inputs.get(id) ?? inputs.set(id, new Input({ source: new BlobSource(assets.get(id).file), formats: ALL_FORMATS })).get(id);
   const sinkOf = async (id) => {
     if (!sinks.has(id)) {
       const track = await open(id).getPrimaryAudioTrack();
@@ -985,9 +1009,39 @@ async function exportVideo(part) {
     asrc.close();
   };
 
+  // Copying: a video can only start at a key frame, so the copy begins at the one at or before the cut (t0) and the sound follows it.
+  let t0 = 0;
+  const copyVideo = async (sink, key) => {
+    let held = [], meta = { decoderConfig: await vt.getDecoderConfig() };
+    for await (const p of sink.packets(key)) { // decode order, which is not always time order
+      if (stop) return;
+      if (p.timestamp < t0) continue; // leans on frames before the key frame, which we don't have
+      if (p.timestamp >= copy.out) { if (p.type === 'key') break; held.push(p); continue; } // past the end: kept only if a frame before the end needs it
+      for (const q of [...held, p]) { await vsrc.add(q.clone({ timestamp: q.timestamp - t0 }), meta); meta = undefined; }
+      held = [];
+      progress(Math.min(1, (p.timestamp - t0) / (copy.out - t0)));
+    }
+    vsrc.close();
+  };
+  const copySound = async () => {
+    const sink = new EncodedPacketSink(at);
+    let meta = { decoderConfig: await at.getDecoderConfig() };
+    for await (const p of sink.packets(await sink.getPacket(t0) ?? await sink.getFirstPacket())) {
+      if (stop) return;
+      if (p.timestamp < t0) continue;
+      if (p.timestamp >= copy.out) break;
+      await asrc.add(p.clone({ timestamp: p.timestamp - t0 }), meta); meta = undefined;
+    }
+    asrc.close();
+  };
+
   try {
     await output.start();
-    await Promise.all([video(), asrc ? sound() : null]);
+    if (copy) {
+      const sink = new EncodedPacketSink(vt), key = await sink.getKeyPacket(copy.in, { verifyKeyPackets: true }) ?? await sink.getFirstPacket();
+      t0 = key.timestamp;
+      await Promise.all([copyVideo(sink, key), asrc ? copySound() : null]);
+    } else await Promise.all([video(), asrc ? sound() : null]);
     if (stop) { await output.cancel(); toast('Export cancelled'); return; }
     await output.finalize();
     if (target instanceof BufferTarget) {
@@ -996,7 +1050,7 @@ async function exportVideo(part) {
       a.download = name;
       a.click();
     }
-    toast(`Exported ${w}×${h}`);
+    toast(copy ? 'Exported the original, untouched' : `Exported ${w}×${h}`);
   } catch (err) {
     stop = true;
     console.error(err);
@@ -1221,18 +1275,28 @@ tweak('tcolor', (c, v) => { c.color = v; });
 
 $('undo').onclick = () => restore(undo, redo);
 $('redo').onclick = () => restore(redo, undo);
-const sizeNote = () => { $('res-s').textContent = outSize().join(' × '); };
+const sizeNote = () => {
+  const c = copyable(part), orig = $('qual').options[2];
+  orig.disabled = !c;
+  if (!c && orig.selected) $('qual').value = 6;
+  const copy = orig.selected && c, a = c && assets.get(c.asset);
+  $('res').disabled = !!copy; // a copy is always the source's own size
+  $('res-s').textContent = (copy ? size(a.el) : outSize()).join(' × ');
+  $('exp-n').hidden = !copy;
+  const mb = copy ? a.file.size * dur(c) / a.duration / 1e6 : bitrate() * (part ? dur(part) : total()) / 8e6; // the picture only; sound adds little
+  $('qual-s').textContent = `about ${mb < 1000 ? Math.max(1, Math.round(mb)) + ' MB' : (mb / 1000).toFixed(1) + ' GB'}`;
+};
 let part = null; // the clip "Export clip" was chosen for; null exports the whole project
 const askExport = (c) => {
   if (!total() || busy) return;
-  pause(); sizeNote();
-  part = c;
+  pause();
+  part = c; sizeNote();
   $('exp-t').textContent = c ? `Export clip ${clips.indexOf(c) + 1}` : 'Export video';
   $('exp').showModal(); $('go').focus();
 };
 $('export').onclick = () => askExport(null);
 $('m-export').onclick = () => { $('menu').hidden = true; askExport(picked()); };
-$('res').onchange = sizeNote;
+$('res').onchange = $('qual').onchange = sizeNote;
 $('go').onclick = () => exportVideo(part); // the form closes the dialog itself; the click also carries the permission the save picker needs
 $('zoom').oninput = (e) => { pps = 2 ** e.target.value; render(); };
 

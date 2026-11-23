@@ -4,6 +4,10 @@ A video editor that runs entirely in the browser. Your media never leaves your c
 
 **Try it:** https://thebestvideditor.theherostores.workers.dev
 
+![The Best Video Editor](docs/Screenshot%202026-11-24%20at%2003.33.12.png)
+
+Built with Claude Code in about a day: I wrote short specs, let the AI build each feature, then reviewed and tested every change before shipping it.
+
 ## What it does
 
 - Timeline with a main track, overlay tracks, audio tracks and text
